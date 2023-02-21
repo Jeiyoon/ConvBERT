@@ -7,12 +7,13 @@
 1. python=3.7
 2. pytorch==1.12.1
 3. sentencepiece==0.1.97
-4. tqdm, setproctitle
+4. setproctitle
 
 # Dataset
 
 ## Pretrain: Kowiki (Korean)
 
+- Download
 ~~~
 $ git clone https://github.com/paul-hyun/web-crawler.git
 $ cd web-crawler
@@ -24,7 +25,7 @@ $ pip install pymongo
 $ python kowiki.py
 ~~~
 
-- result 
+- Result 
 ```
 ['▁겨울', '이', '▁되어', '서', '▁날', '씨', '가', '▁무', '척', '▁추', '워', '요', '.']
 [3217, 3625, 677, 3639, 715, 4073, 3636, 106, 4227, 197, 3993, 3796, 3627]
@@ -37,3 +38,13 @@ $ python kowiki.py
 ['▁겨울', '에', '▁감', '기', '▁조', '심', '하', '시', '고', '▁행', '복', '한', '▁연', '말', '▁되', '세', '요', '.']
 [3217, 3628, 193, 3643, 53, 3872, 3633, 3650, 3638, 246, 3911, 3640, 63, 3869, 472, 3719, 3796, 3627]
 ```
+
+## Finetune: Naver sentiment movie corpus v1.0 (Korean)
+
+- Download
+~~~
+$ cd web-crawler
+$ wget https://raw.githubusercontent.com/e9t/nsmc/master/ratings_train.txt
+$ wget https://raw.githubusercontent.com/e9t/nsmc/master/ratings_test.txt
+$ python naver_movie.py
+~~~
