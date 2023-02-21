@@ -1,4 +1,3 @@
-# author: https://paul-hyun.github.io/vocab-with-sentencepiece/
 import os, argparse, datetime, time, re, wget, json
 from tqdm import tqdm, trange
 import pandas as pd
