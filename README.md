@@ -50,12 +50,11 @@ $ python naver_movie.py
 
 # Run
 
-- convbert.py
 - define your task (pretrain or finetune)
 
 e.g., 
 ~~~
---task pretrain
+python convbert.py --task pretrain
 ~~~
 
 # Reference
