@@ -15,7 +15,6 @@
 
 - Download
 ~~~
-$ git clone https://github.com/paul-hyun/web-crawler.git
 $ cd web-crawler
 $ pip install tqdm
 $ pip install pandas
