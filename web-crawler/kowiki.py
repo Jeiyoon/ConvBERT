@@ -1,7 +1,10 @@
-import os, argparse, datetime, time, re, wget, json
-from tqdm import tqdm, trange
+# author: https://paul-hyun.github.io/vocab-with-sentencepiece/
+import os, argparse, datetime, re, wget, json
 import pandas as pd
+import sentencepiece as spm
 
+from csv_to_text import csv_to_text
+from generate_vocab import spm_train
 
 SEPARATOR = u"\u241D"
 
@@ -51,6 +54,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="kowiki", type=str, required=False,
                         help="위키를 저장할 폴더 입니다.")
+    parser.add_argument("--corpus_file", default="kowiki.txt", type=str, required=False,
+                        help="corpus 파일 이름")
+    parser.add_argument("--vocab_size", default=8000, type=int, required=False,
+                        help="vocab 크기")
+
     args = parser.parse_args()
 
     """ 1. wiki를 저장할 폴더 생성 """
@@ -76,7 +84,7 @@ if __name__ == "__main__":
                 if line:
                     """ 4. 여러줄띄기(\n\n...) 한줄띄기로(\n) 변경 """
                     dataset.append(trim_text(line))
-    
+
     # 자장파일 결정
     now = datetime.datetime.now().strftime("%Y%m%d")
     output = f"{args.output}/kowiki_{now}.csv"
@@ -85,7 +93,38 @@ if __name__ == "__main__":
     if 0 < len(dataset):
         df = pd.DataFrame(data=dataset)
         df.to_csv(output, sep=SEPARATOR, index=False)
-    
+
     # 파일삭제
     """ 5. csv 파일을 제외한 나머지 파일 삭제 """
     del_garbage(args.output)
+
+    """ 6. csv 파일을 text 파일로 변환 """
+    in_file = "kowiki/kowiki_20230210.csv"
+    out_file = "kowiki/kowiki.txt"
+
+    csv_to_text(in_file, out_file)
+
+    """ 7. Vocab 파일 만들기 """
+    corpus_file = args.corpus_file # "kowiki.txt"
+    prefix = corpus_file.replace(".txt", "") # "kowiki"
+    vocab_size = args.vocab_size # 8000
+    spm_train(corpus_file, prefix, vocab_size)
+
+    """ 8. 테스트 """
+    vocab_file = "kowiki/kowiki.model"
+    vocab = spm.SentencePieceProcessor()
+    vocab.load(vocab_file)
+
+    lines = [
+        "겨울이 되어서 날씨가 무척 추워요.",
+        "이번 성탄절은 화이트 크리스마스가 될까요?",
+        "겨울에 감기 조심하시고 행복한 연말 되세요."
+    ]
+
+    for line in lines:
+        pieces = vocab.encode_as_pieces(line)
+        ids = vocab.encode_as_ids(line)
+        print(line)
+        print(pieces)
+        print(ids)
+        print()
