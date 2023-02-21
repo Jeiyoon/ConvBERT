@@ -1,10 +1,12 @@
 # Description
 
-- This repository reimplemented "ConvBERT: Improving BERT with Span-based Dynamic Convolution (Jiang et al., NeurIPS 2020)" based on awesome works (See Reference) for dataset.
+- This repository reimplemented "ConvBERT: Improving BERT with Span-based Dynamic Convolution (Jiang et al., NeurIPS 2020)" based on awesome works (See Reference).
 
 # Requirements
 
-
+1. python=3.7
+2. pytorch==1.12.1
+3. tqdm
 
 # Dataset
 
