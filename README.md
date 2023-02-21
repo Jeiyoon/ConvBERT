@@ -6,7 +6,9 @@
 
 1. python=3.7
 2. pytorch==1.12.1
-3. tqdm
+3. sentencepiece==0.1.97
+4. tqdm
+5. setproctitle
 
 # Dataset
 
