@@ -57,3 +57,33 @@ e.g.,
 ~~~
 --task pretrain
 ~~~
+
+# Reference
+
+- ConvBERT: Improving BERT with Span-based Dynamic Convolution (Jiang et al., NeurIPS 2020)
+  - https://arxiv.org/pdf/2008.02496.pdf
+  - https://github.com/huggingface/transformers/blob/main/src/transformers/models/convbert/modeling_convbert.py
+  - GELU: https://github.com/huggingface/transformers/blob/main/src/transformers/activations.py
+  - config: https://huggingface.co/YituTech/conv-bert-base/resolve/main/config.json
+  - config: https://huggingface.co/docs/transformers/main_classes/configuration#configuration
+- PAY LESS ATTENTION WITH LIGHTWEIGHT AND DYNAMIC CONVOLUTIONS (Wu et al., ICLR 2019)
+  - https://arxiv.org/pdf/1901.10430.pdf
+- Korean dataset preprocessing
+  - https://paul-hyun.github.io/vocab-with-sentencepiece/
+- Transformer
+  - https://paul-hyun.github.io/transformer-01/
+  - https://paul-hyun.github.io/transformer-02/
+  - https://paul-hyun.github.io/transformer-03/
+- BERT
+  - https://paul-hyun.github.io/bert-01/
+  - https://paul-hyun.github.io/bert-02/
+  - Finetune: https://moondol-ai.tistory.com/241
+  - Pytorch Lightning: https://pytorch-lightning.readthedocs.io/en/stable/common/trainer.html
+- Depthwise Convolution
+  - https://lena-voita.github.io/nlp_course/models/convolutional.html
+  - https://gaussian37.github.io/dl-concept-dwsconv/
+  - https://youtu.be/T7o3xvJLuHk
+- LightWeight Convolution
+  - https://bo-son.github.io/2019/04/05/pay_less_attention/ 
+- Gate Linear Unit (GLU)
+  - https://medium.com/deeplearningmadeeasy/glu-gated-linear-unit-21e71cd52081
