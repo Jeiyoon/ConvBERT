@@ -47,3 +47,13 @@ $ wget https://raw.githubusercontent.com/e9t/nsmc/master/ratings_train.txt
 $ wget https://raw.githubusercontent.com/e9t/nsmc/master/ratings_test.txt
 $ python naver_movie.py
 ~~~
+
+# Run
+
+- convbert.py
+- define your task (pretrain or finetune)
+
+e.g., 
+~~~
+--task pretrain
+~~~
