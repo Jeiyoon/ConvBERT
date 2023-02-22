@@ -57,10 +57,11 @@ def generate_pretrain_data(vocab, count, n_seq, mask_prob):
     args = get_args()
 
     in_file = args.vocab_input_path  # pretrain 전처리에 사용할 corpus 경로
-    out_file = args.vocab_output_path # 전처리후 저장되는 경로
+    out_file = args.vocab_output_path  # 전처리후 저장되는 경로
 
     # generate pretrain dataset
     make_pretrain_data(vocab, in_file, out_file, count, n_seq, mask_prob)
+
 
 def apply_chunking_to_forward(
     forward_fn: Callable[..., torch.Tensor], chunk_size: int, chunk_dim: int, *input_tensors
@@ -180,7 +181,7 @@ def create_pretrain_mask(tokens, mask_cnt, vocab_list):
                 masked_token = "[MASK]"
             else:
                 """
-                5. 남은 20%에 대해 10%는 현재 값을 유지, 10%는 vocab_list에서 임의의 값을 선택함
+                5. 남은 20%에 대해 10%는 현재 값을 유지, 10%는 vocab_list (토큰 모음)에서 임의의 값을 선택함
                 """
                 # if random() < 0.5: # 10% keep original
                 if rand.random() < 0.5:  # 10% keep original
@@ -246,7 +247,6 @@ def create_pretrain_instances(docs, doc_idx, doc, n_seq, mask_prob, vocab_list):
 
                 rand = random.Random()
 
-                # if len(current_chunk) == 1 or random() < 0.5:
                 if len(current_chunk) == 1 or rand.random() < 0.5:
                     is_next = 0 # False
                     tokens_b_len = tgt_seq - len(tokens_a)
@@ -294,6 +294,7 @@ def create_pretrain_instances(docs, doc_idx, doc, n_seq, mask_prob, vocab_list):
 
             current_chunk = []
             current_length = 0
+
     return instances
 
 
@@ -363,6 +364,9 @@ def make_pretrain_data(vocab, in_file, out_file, count, n_seq, mask_prob):
 def pretrin_collate_fn(inputs):
     labels_cls, labels_lm, inputs, segments = list(zip(*inputs))
 
+    """
+    배치단위로 데이터를 처리하기 위해 패딩을 추가하여 길이를 맞춤
+    """
     labels_lm = torch.nn.utils.rnn.pad_sequence(labels_lm, batch_first=True, padding_value=-1)
     inputs = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=0)
     segments = torch.nn.utils.rnn.pad_sequence(segments, batch_first=True, padding_value=0)
@@ -379,6 +383,9 @@ def pretrin_collate_fn(inputs):
 def finetune_collate_fn(inputs):
     labels, inputs, segments = list(zip(*inputs))
 
+    """
+    pretrain이 아니라서 labels_lm이 없음
+    """
     inputs = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=0)
     segments = torch.nn.utils.rnn.pad_sequence(segments, batch_first=True, padding_value=0)
 
@@ -589,7 +596,7 @@ class SpanBasedDynamicConvolution(nn.Module):
             self.num_attention_heads = new_num_attention_heads  # new size
             self.head_ratio = config.head_ratio
 
-        self.conv_kernel_size = config.conv_kernel_size  # e.g., 9
+        self.conv_kernel_size = config.conv_kernel_size  # e.g., 9 (best performance)
 
         if config.d_hidn % self.num_attention_heads != 0:
             raise ValueError("hidden_size should be divisible by num_attention_heads")
@@ -791,11 +798,16 @@ class GroupedLinearLayer(nn.Module):
         self.group_in_dim = self.input_size // self.num_groups
         self.group_out_dim = self.output_size // self.num_groups
 
-        self.weight = nn.Parameter(torch.empty(self.num_groups, self.group_in_dim, self.group_out_dim))
-        self.bias = nn.Parameter(torch.empty(output_size))
+        # https://easy-going-programming.tistory.com/11
+        # https://tutorials.pytorch.kr/prototype/skip_param_init.html
+        # self.weight = nn.Parameter(torch.empty(self.num_groups, self.group_in_dim, self.group_out_dim))
+        # self.bias = nn.Parameter(torch.empty(output_size))
+        self.register_parameter('weight', nn.Parameter(torch.empty(self.num_groups, self.group_in_dim, self.group_out_dim)))
+        self.register_parameter('bias', nn.Parameter(torch.empty(output_size)))
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size = list(hidden_states.size())[0]
+        # Tensor(32, 2, 768) -> Tensor(64, 2, 384)
         x = torch.reshape(hidden_states, [-1, self.num_groups, self.group_in_dim])
         x = x.permute(1, 0, 2)
         x = torch.matmul(x, self.weight)
@@ -834,7 +846,7 @@ class ConvBertOutput(nn.Module):
 
         if config.num_groups == 1:
             self.dense = nn.Linear(config.intermediate_size, config.d_hidn)
-        else:
+        else: # num_groups == 2 라서 여기로 들어옴
             self.dense = GroupedLinearLayer(
                 input_size=config.intermediate_size,
                 output_size=config.d_hidn,
@@ -858,7 +870,7 @@ class EncoderLayer(nn.Module):
         self.config = config
 
         # https://huggingface.co/docs/transformers/main_classes/configuration#configuration
-        self.chunk_size_feedforward = 0  # config.chunk_size_feed_forward: No linear separation
+        self.chunk_size_feed_forward = 2  # best performance /  config.chunk_size_feed_forward
         self.seq_len_dim = 1
         self.attention = ConvBertAttention(config)
         self.is_decoder = False  # config.is_decoder
@@ -886,13 +898,16 @@ class EncoderLayer(nn.Module):
         attention_output = self_attention_outputs[0]
         outputs = self_attention_outputs[1:]
 
+        """
+        GL 적용
+        """
         layer_output = apply_chunking_to_forward(
             self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
         )
         outputs = (layer_output,) + outputs
 
-        # Tensor(128, 256, 768)
-        return outputs # attention_output
+        # Tensor(batch_size, 256, 768)
+        return outputs[0]  # attention_output
 
     def feed_forward_chunk(self, attention_output):
         intermediate_output = self.intermediate(attention_output)
@@ -980,7 +995,7 @@ class BERTPretrain(nn.Module):
         self.config = config
 
         """
-        ConvBERT 모델을 가져와서 학습
+        1. 학습을 위해 ConvBERT 모델을 가져옴
         """
         self.bert = ConvBERT(self.config)
         # nsp: classfier objective
@@ -991,7 +1006,7 @@ class BERTPretrain(nn.Module):
 
     def forward(self, inputs, segments):
         """
-        두가지 task인 nsp와 mlm에 대해 학습을 진행함
+        2. 두가지 task인 nsp와 mlm에 대해 학습을 진행함
         """
         # (bs, n_enc_seq, d_hidn), (bs, d_hidn), [(bs, n_head, n_enc_seq, n_enc_seq)]
         outputs, outputs_cls = self.bert(inputs, segments)
@@ -1004,6 +1019,14 @@ class BERTPretrain(nn.Module):
 
 
 class PretrainDataSet(torch.utils.data.Dataset):
+    """
+    instance:
+        - is_next: tokens_a와 tokens_b가 인접한 문장인지 (bool)
+        - tokens: 문장의 토큰들
+        - segment: 두 문장을 0과 1로 구분함
+        - mask_idx: tokens 내 mask idx
+        - mask_label: tokens 내 mask 부분 정답
+    """
     def __init__(self, vocab, infile):
         self.vocab = vocab
         self.labels_cls = []
@@ -1011,6 +1034,7 @@ class PretrainDataSet(torch.utils.data.Dataset):
         self.sentences = []
         self.segments = []
 
+        # 라인수 체크
         line_cnt = 0
         with open(infile, "r") as f:
             for line in f:
@@ -1018,13 +1042,27 @@ class PretrainDataSet(torch.utils.data.Dataset):
 
         with open(infile, "r") as f:
             for i, line in enumerate(tqdm(f, total=line_cnt, desc=f"Loading {infile}", unit=" lines")):
+                """
+                e.g., 
+                tokens: ['[CLS]', '▁10', '월', '▁1', '일', '▁~', '▁)', '는', '▁민주', '당', '▁출신', '▁미국의', '▁제', '[MASK]', '[MASK]', '[MASK]', '▁대통령', '(19', '7', '7', '년', '▁~', '▁1981', '년', ')', '[MASK]', '[MASK]', '쑤', '[MASK]', '[MASK]', '▁카', '터', '는', '▁조지', '아', '주', '▁섬', '[MASK]', '▁카', '운', '티', '▁플', '레', '인', '스', '대회', '에서', '▁태어났다', '.', '▁조지', '아', '▁공', '과', '대학교', '를', '▁졸업', '하였다', '.', '▁그', '▁후', '▁해', '군에', '▁들어가', '▁전', '함', '·', '원', '자', '력', '·', '잠', '수', '함', '의', '▁승', '무', '원으로', '▁일', '하였다', '.', '▁195', '3', '년', '▁미국', '▁해군', '▁대', '위로', '▁예', '편', '하였고', '▁이후', '▁땅', '콩', '·', '면', '화', '▁등을', '▁가', '꿔', '▁많은'...
+                mask_label: ['▁제', '3', '9', '대', '▁이', '다', '.', '▁지', '미', '▁섬', '터', '▁마을', '에서', '▁낙', '선', '하였으나', ',', '▁부정', '선거', '▁되어', '▁조지', '아', '▁주', '지', '사를', '▁대통령', '이', '▁미국', '에', '▁사', '는', '▁선거', '에', '▁민주', '당', '▁도', '덕'] 
+                """
                 instance = json.loads(line)
                 self.labels_cls.append(instance["is_next"])
+
+                # piece_to_id: token을 숫자로 변경
                 sentences = [vocab.piece_to_id(p) for p in instance["tokens"]]
                 self.sentences.append(sentences)
+
                 self.segments.append(instance["segment"])
+
                 mask_idx = np.array(instance["mask_idx"], dtype=np.int)
                 mask_label = np.array([vocab.piece_to_id(p) for p in instance["mask_label"]], dtype=np.int)
+                # https://numpy.org/doc/stable/reference/generated/numpy.full.html
+                """
+                mask_idx 위치는 mask_label로, 나머지는 -1로 설정
+                e.g., label_lm: [  -1   -1   -1   -1   -1   -1   -1   -1   -1   -1   -1   -1   31 3679, 3659 3651   -1   -1   -1   -1   -1   -1   -1   -1   -1    8 3626 3627,   19 3715   -1   -1   -1   -1   -1   -1  892 3745   -1   -1   -1   -1,   -1   -1   -1 1249   10   -1   -1   -1    
+                """
                 label_lm = np.full(len(sentences), dtype=np.int, fill_value=-1)
                 label_lm[mask_idx] = mask_label
                 self.labels_lm.append(label_lm)
@@ -1033,8 +1071,10 @@ class PretrainDataSet(torch.utils.data.Dataset):
         assert len(self.labels_cls) == len(self.labels_lm)
         assert len(self.labels_cls) == len(self.sentences)
         assert len(self.labels_cls) == len(self.segments)
+
         return len(self.labels_cls)
 
+    # https://powerofsummary.tistory.com/129
     def __getitem__(self, item):
         return (torch.tensor(self.labels_cls[item]),
                 torch.tensor(self.labels_lm[item]),
@@ -1128,10 +1168,11 @@ def main():
         "head_ratio": 2,
         "initializer_range": 0.02,
         "conv_kernel_size": 9,
-        "num_groups": 1,
+        "num_groups": 2, # best performance
     })
     task = args.task # pretrain 또는 finetune
 
+    # hyperparameter
     learning_rate = 5e-5
     n_epoch = 20
     count = 10  # # of corpus
@@ -1142,6 +1183,7 @@ def main():
     if task == "pretrain":
         """
         4. corpus를 활용한 pretrain dataset 인스턴스 생성 후 json으로 저장
+        - collate_fn: batch단위로 데이터를 처리하기 위한 함수
         """
         generate_pretrain_data(vocab, count, n_seq, mask_prob)
 
@@ -1154,13 +1196,16 @@ def main():
         config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         """
-        5. Pretrain
+        5. 모델 선언
         """
         model = BERTPretrain(config)
 
         save_pretrain = "pretrain/save_convbert_pretrain.pth"
         best_epoch, best_loss = 0, 0
 
+        """
+        6. 기존에 학습된 pretrain값이 있으면 로드
+        """
         if os.path.isfile(save_pretrain):
             best_epoch, best_loss = model.bert.load(save_pretrain)
             print(f"load pretrain from: {save_pretrain}, epoch={best_epoch}, loss={best_loss}")
@@ -1177,28 +1222,22 @@ def main():
         for step in range(n_epoch):
             epoch = step + offset
             if 0 < step:
+                """
+                7. epoch 마다 데이터로더 새로 만들음 (pretrain용 json 파일을 여러개 만들었기 때문)
+                """
                 del train_loader
                 dataset = PretrainDataSet(vocab, f"vocab_bert/vocab_bert_{epoch % count}.json")
                 train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True,
                                                            collate_fn=pretrin_collate_fn)
 
             """
-            Train
+            8. 학습 루프
             """
             loss = train_epoch(config, epoch, model, criterion_lm, criterion_cls, optimizer, train_loader)
             losses.append(loss)
             model.bert.save(epoch, loss, save_pretrain)
 
-        data = {
-            "loss": losses
-        }
     elif task == "finetune":
-        model_name = "convbert_ft"
-        learning_rate = 2e-5
-        n_epoch = 10
-        batch_size = 32
-        wd = 0.01
-
         data_dir = args.finetune_data_path
 
         train_dataset = FineTuneDataSet(vocab, f"{data_dir}/ratings_train.json")
@@ -1213,29 +1252,6 @@ def main():
         save_pretrain_path = args.pretrained_model_path
         model.bert.load(save_pretrain_path)
 
-        args_ft =TrainingArguments(
-            f"test-{model_name}",
-            evaluation_strategy="epoch",
-            save_strategy="epoch",
-            learning_rate=learning_rate,
-            per_device_train_batch_size=batch_size,
-            per_device_eval_batch_size=batch_size,
-            num_train_epochs=n_epoch,
-            seed=42,
-            weight_decay=wd,
-            load_best_model_at_end=True,
-        )
-
-        trainer = Trainer(
-            model,
-            args_ft,
-            train_dataset=train_loader,
-            eval_dataset=test_loader,
-            compute_metrics=compute_metrics,
-            callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]
-        )
-
-        trainer.train()
 
     else:
         raise ValueError("task name should be pretrain or finetune")
