@@ -509,8 +509,10 @@ def eval_epoch(config, model, data_loader):
         for i, value in enumerate(data_loader):
             labels, inputs, segments = map(lambda v: v.to(config.device), value)
 
+            # outputs: Tensor(128, 2)
             outputs = model(inputs, segments)
             logits_cls = outputs[0]
+            # logits_cls: Tensor(2, )
             _, indices = logits_cls.max(1)
 
             match = torch.eq(indices, labels).detach()
