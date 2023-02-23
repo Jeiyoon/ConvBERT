@@ -7,7 +7,7 @@ setproctitle('k4ke-convbert-test')
 import os
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3, 5, 6, 7"
 
 import json
 import argparse
@@ -94,6 +94,14 @@ def apply_chunking_to_forward(
     ```"""
 
     assert len(input_tensors) > 0, f"{input_tensors} has to be a tuple/list of tensors"
+
+    input_tensors_clone = input_tensors[0]
+
+    if input_tensors_clone.size()[1] % 2 != 0:
+        input_tensors_clone = input_tensors_clone[:,:-1,:]
+        input_tensors = list(input_tensors)
+        input_tensors[0] = input_tensors_clone
+        input_tensors = tuple(input_tensors)
 
     # inspect.signature exist since python 3.5 and is a python method -> no problem with backward compatibility
     num_args_in_forward_chunk_fn = len(inspect.signature(forward_fn).parameters)
@@ -464,8 +472,14 @@ def finetune_epoch(config, epoch, model, criterion_cls, optimizer, train_loader)
 def finetune(model, config, learning_rate, n_epoch, train_loader, test_loader):
     """
     Fine tuning과 evaluation을 진행하는 부분
+    Multi-gpu setting
     """
     config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    NGPU = torch.cuda.device_count()
+    if NGPU > 1:
+        model = torch.nn.DataParallel(model, device_ids=list(range(NGPU)))
+
     model.to(config.device)
 
     criterion_cls = torch.nn.CrossEntropyLoss()
@@ -698,6 +712,12 @@ class SpanBasedDynamicConvolution(nn.Module):
         attention_mask = attention_mask.unsqueeze(1).repeat(1, self.num_attention_heads, 1, 1)
 
         if attention_mask is not None:
+            if attention_scores.size()[3] > attention_mask.size()[3]:
+                attention_scores = attention_scores[:,:,:-1,:-1]
+            elif attention_scores.size()[3] < attention_mask.size()[3]:
+                attention_mask = attention_mask[:,:,:-1,:-1]
+            else:
+                pass
             attention_scores = attention_scores + attention_mask
 
         # softmax
@@ -720,11 +740,14 @@ class SpanBasedDynamicConvolution(nn.Module):
         """
         context_layer = torch.cat([context_layer, conv_out], 2)
 
-        # context_layer: Tensor(128, 256, 12, 64)
-        # context_layer.size()[:-2]: torch.Size([128, 256])
         # self.head_ratio: 2
         # self.all_head_size: 384
-        # new_context_layer_shape: (128, 256, 768)
+        # new_context_layer_shape: torch.Size([128, 256, 768])
+        # context_layer: Tensor(128, 256, 12, 64)
+        # context_layer.size()[:-2]: torch.Size([128, 256])
+
+        # attention_probs: Tensor(32, 6, 86, 86)
+        # context_layer: Tensor(32, 86, 768)
         new_context_layer_shape = context_layer.size()[:-2] + (self.head_ratio * self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
 
@@ -751,6 +774,7 @@ class ConvBertSelfOutput(nn.Module):
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
 
+        # Tensor(32, 94, 768)
         return hidden_states
 
 
@@ -766,6 +790,7 @@ class ConvBertAttention(nn.Module):
                 head_mask: Optional[torch.FloatTensor] = None,
                 encoder_hidden_states: Optional[torch.Tensor] = None,
                 output_attentions: Optional[bool] = False) -> Tuple[torch.Tensor, Optional[torch.FloatTensor]]:
+
         self_outputs = self.self(
             hidden_states,
             attention_mask,
@@ -774,7 +799,11 @@ class ConvBertAttention(nn.Module):
             output_attentions,
         )
 
-        attention_output = self.output(self_outputs[0], hidden_states)
+        self_outputs_clone = self_outputs[0].clone()
+
+        # attention_output = self.output(self_outputs[0], hidden_states)
+        attention_output = self.output(self_outputs_clone, hidden_states)
+
         outputs = (attention_output,) + self_outputs[1:]
 
         return outputs
@@ -862,7 +891,7 @@ class EncoderLayer(nn.Module):
         self.config = config
 
         # https://huggingface.co/docs/transformers/main_classes/configuration#configuration
-        self.chunk_size_feed_forward = 2  # best performance /  config.chunk_size_feed_forward
+        self.chunk_size_feed_forward = config.num_groups  # best performance is 2 / config.chunk_size_feed_forward
         self.seq_len_dim = 1
         self.attention = ConvBertAttention(config)
         self.is_decoder = False  # config.is_decoder
@@ -871,7 +900,6 @@ class EncoderLayer(nn.Module):
         self.intermediate = ConvBertIntermediate(config)
         self.output = ConvBertOutput(config)
 
-    # def forward(self, inputs, attn_mask):
     def forward(
             self,
             hidden_states: torch.Tensor,
@@ -888,7 +916,7 @@ class EncoderLayer(nn.Module):
             output_attentions=output_attentions,
         )
         attention_output = self_attention_outputs[0]
-        outputs = self_attention_outputs[1:]
+        # outputs = self_attention_outputs[1:] # no cross attention
 
         """
         GL 적용
@@ -896,7 +924,7 @@ class EncoderLayer(nn.Module):
         layer_output = apply_chunking_to_forward(
             self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
         )
-        outputs = (layer_output,) + outputs
+        outputs = (layer_output,) # + outputs
 
         # Tensor(batch_size, 256, 768)
         return outputs[0]  # attention_output
@@ -1138,6 +1166,7 @@ class FineTuneDataSet(torch.utils.data.Dataset):
 
 
 def main():
+    torch.multiprocessing.set_start_method('spawn')
     """
     1. 코드 동작에 필요한 argument들 불러오기
     """
@@ -1245,6 +1274,7 @@ def main():
         9. finetuning을 위한 데이터 로더 정의
         """
         data_dir = args.finetune_data_path # web-crawler
+        batch_size = 32 * 4
 
         train_dataset = FineTuneDataSet(vocab, f"{data_dir}/ratings_train.json")
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
