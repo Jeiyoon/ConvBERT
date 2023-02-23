@@ -7,7 +7,7 @@ setproctitle('k4ke-convbert-test')
 import os
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 
 import json
 import argparse
@@ -43,7 +43,7 @@ def get_args(description="ConvBERT"):
                         help="vocabulary input path (txt)")
     parser.add_argument("--vocab_output_path", default="vocab_bert/vocab_bert_{}.json", type=str, required=False,
                         help="vocabulary output path (json)")
-    parser.add_argument("--finetune_data_path", default="naver_movie", type=str, required=False,
+    parser.add_argument("--finetune_data_path", default="web-crawler", type=str, required=False,
                         help="data path for finetuning")
     parser.add_argument("--pretrained_model_path", default="pretrain/save_convbert_pretrain.pth", type=str, required=False,
                         help="prtrained model path")
@@ -398,6 +398,7 @@ def finetune_collate_fn(inputs):
 
 
 def train_epoch(config, epoch, model, criterion_lm, criterion_cls, optimizer, train_loader):
+    # pretrain
     losses = []
     model.train()
 
@@ -423,8 +424,7 @@ def train_epoch(config, epoch, model, criterion_lm, criterion_cls, optimizer, tr
             pbar.set_postfix_str(f"Loss: {loss_val:.3f} ({np.mean(losses):.3f})")
     return np.mean(losses)
 
-# finetune_epoch(config, epoch, model, criterion_cls, optimizer, train_loader)
-# criterion_cls = torch.nn.CrossEntropyLoss()
+
 def finetune_epoch(config, epoch, model, criterion_cls, optimizer, train_loader):
     losses = []
     model.train()
@@ -437,10 +437,14 @@ def finetune_epoch(config, epoch, model, criterion_cls, optimizer, train_loader)
             outputs = model(inputs, segments)
             # logits_cls = outputs[0]
             # logits_cls = outputs[:, 0]
+            """
+            두 값 중 큰값의 idx를 label과 비교함
+            """
             logits_cls = torch.argmax(outputs, dim=1)
 
             # logits_cls: Tensor(2,) -> Tensor(32, )
             # labels: Tensor(32, )
+            # criterion_cls = torch.nn.CrossEntropyLoss()
             loss_cls = criterion_cls(logits_cls.float(), labels.float())
             loss = loss_cls
 
@@ -457,12 +461,36 @@ def finetune_epoch(config, epoch, model, criterion_cls, optimizer, train_loader)
     return np.mean(losses)
 
 
+def finetune(model, config, learning_rate, n_epoch, train_loader, test_loader):
+    """
+    Fine tuning과 evaluation을 진행하는 부분
+    """
+    config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(config.device)
+
+    criterion_cls = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+    best_epoch, best_loss, best_score = 0, 0, 0
+    losses, scores = [], []
+
+    for epoch in range(n_epoch):
+        loss = finetune_epoch(config, epoch, model, criterion_cls, optimizer, train_loader)
+        score = eval_epoch(config, model, test_loader)
+
+        losses.append(loss)
+        scores.append(score)
+
+        if best_score < score:
+            best_epoch, best_loss, best_score = epoch, loss, score
+    print(f">>>> epoch={best_epoch}, loss={best_loss:.5f}, socre={best_score:.5f}")
+    return losses, scores
+
+
 def eval_epoch(config, model, data_loader):
     matchs = []
     model.eval()
 
-    n_word_total = 0
-    n_correct_total = 0
     with tqdm(total=len(data_loader), desc=f"Valid") as pbar:
         for i, value in enumerate(data_loader):
             labels, inputs, segments = map(lambda v: v.to(config.device), value)
@@ -473,51 +501,15 @@ def eval_epoch(config, model, data_loader):
 
             match = torch.eq(indices, labels).detach()
             matchs.extend(match.cpu())
+            """
+            평가 지표: Accuracy
+            """
             accuracy = np.sum(matchs) / len(matchs) if 0 < len(matchs) else 0
 
             pbar.update(1)
             pbar.set_postfix_str(f"Acc: {accuracy:.3f}")
+
     return np.sum(matchs) / len(matchs) if 0 < len(matchs) else 0
-
-
-def compute_metrics(pred):
-    labels = pred.label_ids
-    preds = pred.predictions.argmax(-1)
-
-    acc = accuracy_score(labels, preds)
-
-    return acc
-
-
-def finetune(model, config, train_loader, test_loader):
-    config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(config.device)
-
-    learning_rate = 5e-5
-    n_epoch = 10
-
-    trainer = Trainer(max_epochs=n_epoch, gpus=4, devices=config.device)
-    trainer.fit(model, train_dataloaders=train_loader)
-    trainer.test(test_dataloaders=test_loader)
-
-    criterion_cls = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-    best_epoch, best_loss, best_score = 0, 0, 0
-    losses, scores = [], []
-
-    for epoch in range(n_epoch):
-        # loss = finetune_epoch(config, epoch, model, criterion_cls, optimizer, train_loader)
-        score = eval_epoch(config, model, test_loader)
-
-        # losses.append(loss)
-        scores.append(score)
-
-        if best_score < score:
-            # best_epoch, best_loss, best_score = epoch, loss, score
-            best_epoch, best_score = epoch, score
-    print(f">>>> epoch={best_epoch}, loss={best_loss:.5f}, socre={best_score:.5f}")
-    return losses, scores
 
 
 class Config(dict):
@@ -1018,6 +1010,26 @@ class BERTPretrain(nn.Module):
         return logits_cls, logits_lm  # , attn_probs
 
 
+class ConvBERTClassification(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+        self.bert = ConvBERT(self.config)
+
+        # classification task
+        self.projection_cls = nn.Linear(self.config.d_hidn, self.config.n_output, bias=False)
+
+    def forward(self, inputs, segments):
+        outputs, outputs_cls = self.bert(inputs, segments)
+
+        logit_cls = self.projection_cls(outputs_cls)
+
+        # logit_cls = torch.argmax(logit_cls, dim=1)
+
+        return logit_cls
+
+
 class PretrainDataSet(torch.utils.data.Dataset):
     """
     instance:
@@ -1082,33 +1094,20 @@ class PretrainDataSet(torch.utils.data.Dataset):
                 torch.tensor(self.segments[item]))
 
 
-class BERTFineTune(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-
-        self.bert = ConvBERT(self.config)
-
-        # classification task
-        self.projection_cls = nn.Linear(self.config.d_hidn, self.config.n_output, bias=False)
-
-    def forward(self, inputs, segments):
-        outputs, outputs_cls = self.bert(inputs, segments)
-
-        logit_cls = self.projection_cls(outputs_cls)
-
-        # logit_cls = torch.argmax(logit_cls, dim=1)
-
-        return logit_cls
-
-
 class FineTuneDataSet(torch.utils.data.Dataset):
     def __init__(self, vocab, infile):
+        """
+        Pretrain과 다르게 nsp, mlm task가 없기 때문에 그 부분을 빼고 classification 데이터 처리 부분을 넣음.
+            - label: NSMC dataset의 label
+            - sentences: [[CLS] + tokens, ... ]
+            - segments: [[0] * len(sentences)]
+        """
         self.vocab = vocab
         self.labels = []
         self.sentences = []
         self.segments = []
 
+        # 라인수 세기
         line_cnt = 0
         with open(infile, "r") as f:
             for line in f:
@@ -1118,8 +1117,12 @@ class FineTuneDataSet(torch.utils.data.Dataset):
             for i, line in enumerate(tqdm(f, total=line_cnt, desc="Loading Dataset", unit=" lines")):
                 data = json.loads(line)
                 self.labels.append(data["label"])
-                sentence = [vocab.piece_to_id("[CLS]")] + [vocab.piece_to_id(p) for p in data["doc"]] + [
-                    vocab.piece_to_id("[SEP]")]
+
+                """
+                doc에 있는 token들을 읽어서 숫자 id로 변환
+                """
+                sentence = [vocab.piece_to_id("[CLS]")] + [vocab.piece_to_id(p) for p in data["doc"]] \
+                           + [vocab.piece_to_id("[SEP]")]
                 self.sentences.append(sentence)
                 self.segments.append([0] * len(sentence))
 
@@ -1238,7 +1241,10 @@ def main():
             model.bert.save(epoch, loss, save_pretrain)
 
     elif task == "finetune":
-        data_dir = args.finetune_data_path
+        """
+        9. finetuning을 위한 데이터 로더 정의
+        """
+        data_dir = args.finetune_data_path # web-crawler
 
         train_dataset = FineTuneDataSet(vocab, f"{data_dir}/ratings_train.json")
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
@@ -1247,11 +1253,20 @@ def main():
         test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
                                                   collate_fn=finetune_collate_fn)
 
-        # loading
-        model = BERTFineTune(config)
+        """
+        10. Pretrain된 모델을 불러옴
+        """
+        # hyperparameter
+        n_epoch = 10
+
+        model = ConvBERTClassification(config)
         save_pretrain_path = args.pretrained_model_path
         model.bert.load(save_pretrain_path)
 
+        """
+        11. Fine tuning
+        """
+        losses, scores = finetune(model, config, learning_rate, n_epoch, train_loader, test_loader)
 
     else:
         raise ValueError("task name should be pretrain or finetune")
