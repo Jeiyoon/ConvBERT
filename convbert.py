@@ -7,7 +7,7 @@ setproctitle('k4ke-convbert-test')
 import os
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "3, 5, 6, 7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
 
 import json
 import argparse
@@ -511,10 +511,12 @@ def eval_epoch(config, model, data_loader):
 
             # outputs: Tensor(128, 2)
             outputs = model(inputs, segments)
-            logits_cls = outputs[0]
+            indices = torch.argmax(outputs, dim=1)
+            # logits_cls = outputs[0]
             # logits_cls: Tensor(2, )
-            _, indices = logits_cls.max(1)
+            # _, indices = logits_cls.max(1)
 
+            # labels: Tensor(128, )
             match = torch.eq(indices, labels).detach()
             matchs.extend(match.cpu())
             """
